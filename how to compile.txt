@@ -1,0 +1,4 @@
+1) Make sure you have WinAvr installed (http://winavr.sourceforge.net/)
+2) open a CMD window and navigate to the Servo8Bit folder
+3) type in "make" in the CMD window and the code will be compiled
+4) type in "make program" to program your Attiny. This assumes you are using a usb programer (such as the AVRISP mkII).
