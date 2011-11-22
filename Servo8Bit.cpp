@@ -50,6 +50,19 @@
 // *The Servo Sequencer - which is the actual driver that generates pulses
 // *The Servo class - which provides the Arduino-like interface
 
+#ifdef USE_TIMER0
+    #define TCNTn   TCNT0
+    #define OCRnx   OCR0A
+    #define OCFnx   OCF0A
+    #define OCIEnx  OCIE0A
+#endif
+
+#ifdef USE_TIMER1
+    #define TCNTn   TCNT1
+    #define OCRnx   OCR1A
+    #define OCFnx   OCF1A
+    #define OCIEnx  OCIE1A
+#endif
 
 
 
@@ -131,6 +144,7 @@ private:
     //This is a purely static class. Disallow making instances of this class.
     ServoSequencer();   //private constructor
     static void servoTimerSetup(); //Configures the timer used by this driver
+    static void setupTimerPrescaler(); //helper function to setup the prescaler
 
 };//end ServoSequencer
 
@@ -393,6 +407,7 @@ bool ServoSequencer::isEnabled(uint8_t servoNumber)
     }
 }//end isEnabled
 
+
 //=============================================================================
 // FUNCTION:    void servoTimerSetup()
 //
@@ -418,18 +433,14 @@ void ServoSequencer::servoTimerSetup()
             servoRegistry[i].slotOccupied = false;
         }
 
-        //set counter0 prescaler to 64
-        //our FCLK is 8mhz so this makes each timer tick be 8 microseconds long
-        TCCR0B &= ~(1<< CS02); //clear
-        TCCR0B |=  (1<< CS01); //set
-        TCCR0B |=  (1<< CS00); //set
+        setupTimerPrescaler();
 
-        TIMSK |= (1 << OCIE0A); // Enable Output Compare Match A Interrupt
+        TIMSK |= (1 << OCIEnx); // Enable Output Compare Match Interrupt
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
         //set the compare value to any number larger than 0
-        OCR0A = 255;
+        OCRnx = 255;
         sei(); // Enable global interrupts
 
         timerIsSetup = true;
@@ -448,6 +459,72 @@ void ServoSequencer::servoTimerSetup()
     */
 
 }//end servoTimerSetup
+
+
+//=============================================================================
+// FUNCTION:    void setupTimerPrescaler()
+//
+// DESCRIPTION: Sets up the timer prescaller based on what timer was selected
+//              to be used and the F_CPU frequence
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//
+//=============================================================================
+void ServoSequencer::setupTimerPrescaler()
+{
+    #ifdef USE_TIMER0
+        //reset the Timer Counter Control Register to its reset value
+        TCCR0B = 0;
+
+        #if F_CPU == 8000000L
+            //set counter0 prescaler to 64
+            //our FCLK is 8mhz so this makes each timer tick be 8 microseconds long
+            TCCR0B &= ~(1<< CS02); //clear
+            TCCR0B |=  (1<< CS01); //set
+            TCCR0B |=  (1<< CS00); //set
+
+        #elif F_CPU == 1000000L
+            //set counter0 prescaler to 8
+            //our F_CPU is 1mhz so this makes each timer tick be 8 microseconds long
+            TCCR0B &= ~(1<< CS02); //clear
+            TCCR0B |=  (1<< CS01); //set
+            TCCR0B &= ~(1<< CS00); //clear
+        #else
+            //unsupported clock speed
+            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #endif
+    #endif
+
+
+    #ifdef USE_TIMER1
+        //reset the Timer Counter Control Register to its reset value
+        TCCR1 = 0;
+
+        #if F_CPU == 8000000L
+            //set counter1 prescaler to 64
+            //our F_CPU is 8mhz so this makes each timer tick be 8 microseconds long
+            TCCR1 &= ~(1<< CS13); //clear
+            TCCR1 |=  (1<< CS12); //set
+            TCCR1 |=  (1<< CS11); //set
+            TCCR1 |=  (1<< CS10); //set
+
+        #elif F_CPU == 1000000L
+            //set counter1 prescaler to 8
+            //our F_CPU is 1mhz so this makes each timer tick be 8 microseconds long
+            TCCR1 &= ~(1<< CS13); //clear
+            TCCR1 |=  (1<< CS12); //set
+            TCCR1 &= ~(1<< CS11); //clear
+            TCCR1 &= ~(1<< CS10); //clear
+        #else
+            //unsupported clock speed
+            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #endif
+    #endif
+}//end setupTimerPrescaler
+
+
 
 
 //=============================================================================
@@ -488,9 +565,9 @@ void ServoSequencer::timerCompareMatchISR()
         }
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
         //set the compare value to 64 (512 us). This is the constant pulse offset.
-        OCR0A = 64 - 4; //trim off 4 ticks (32us), this is about the total combined time we spent inside this ISR;
+        OCRnx = 64 - 4; //trim off 4 ticks (32us), this is about the total combined time we spent inside this ISR;
         //update our state
         state = WAITING_FOR_512_MARK;
         break;
@@ -498,28 +575,31 @@ void ServoSequencer::timerCompareMatchISR()
 
     case WAITING_FOR_512_MARK:
         //set the compare value to the additional amount of timer ticks the pulse should last
-        OCR0A = servoRegistry[servoIndex].pulseLengthInTicks;
+        OCRnx = servoRegistry[servoIndex].pulseLengthInTicks;
         //update our state
         state = WAITING_TO_SET_PIN_LOW;
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
 
-        //Did we just set OCR0A to zero?
-        if(OCR0A == 0)
+        //Did we just set OCRnx to zero?
+        if(OCRnx == 0)
         {
-           //Since we are setting OCR0A and TCNT0 to 0 we are not going to get an interrupt
+           //Since we are setting OCRnx and TCNTn to 0 we are not going to get an interrupt
            //until the counter overflows and goes back to 0.
            //Manually set the Timer0 Output Compare Match A interrupt
            TIFR &= ~(1 << OCF0A);  // write 0 to the OCF0A flag to set it
            //This is cause this interrupt to fire again
+
+           //**** FIX THIS. SOFTWARE CANNOT MANUALLY SET FLAGS IN TIFR. ****
         }
         else
         {
             //otherwise we need to clear the OCF0A flag because it is possible that the
             //counter value incremented and matched the output compare value while this
             //function was being executed
-            TIFR |= (1 << OCF0A);  // write logical 1 to the OCF0A flag to clear it
+            TIFR = (1 << OCF0A);  // write logical 1 to the OCF0A flag to clear it
+                                  // also have to write 0 to all other bits for this to work.
         }
         break;
 
@@ -544,20 +624,20 @@ void ServoSequencer::timerCompareMatchISR()
             //set the compare value to the amount of time (in timer ticks) we need to wait to reach
             //4096 microseconds mark
             //which is 512 minus the total pulse length. (resulting number will be between 0 and 255 inclusive)
-            OCR0A = 512 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
+            OCRnx = 512 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
         }
         else
         {
             //This pulse length has not reached the 2048 us mark, therefor we have to get to that mark first
             //update state
             state = WAITING_FOR_2048_MARK;
-            //set OCR0A to the amount of time (in timer ticks) we have to wait to reach this mark
+            //set OCRnx to the amount of time (in timer ticks) we have to wait to reach this mark
             //which is 255 minus the total pulse length
-            OCR0A = 255 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
+            OCRnx = 255 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
         }
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
 
         break;
 
@@ -565,17 +645,21 @@ void ServoSequencer::timerCompareMatchISR()
         //update state
         state = WAITING_TO_SET_PIN_HIGH;
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
         //set the compare value to the longest length of time, 255 ticks, or 2040 microseconds
         //This will take us to the ~4096 microsecond mark,
         //at which point the cycle starts again with the next servo slot.
-        OCR0A = 255;
+        OCRnx = 255;
         break;
     }//end switch
 }//end timerCompareMatchISR
 
 
 
+
+
+//only define this ISR if we are using TIMER0
+#ifdef USE_TIMER0
 //=============================================================================
 // FUNCTION:    Interrupt service routine for timer0 compare A match
 //
@@ -590,7 +674,27 @@ ISR(TIM0_COMPA_vect)
 {
     ServoSequencer::timerCompareMatchISR();
 }//end ISR TIM0_COMPA_vect
+#endif
 
+
+
+//only define this ISR if we are using TIMER1
+#ifdef USE_TIMER1
+//=============================================================================
+// FUNCTION:    Interrupt service routine for timer1 compare A match
+//
+// DESCRIPTION: AVR Libc provided function that is vectored into when the
+//              timer0 compare A match interrupt fires.
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//=============================================================================
+ISR(TIM1_COMPA_vect)
+{
+    ServoSequencer::timerCompareMatchISR();
+}//end ISR TIM0_COMPA_vect
+#endif
 
 
 
@@ -631,7 +735,7 @@ ISR(TIM0_COMPA_vect)
 //=============================================================================
 // FUNCTION:    constructor
 //
-// DESCRIPTION: Constructor or or or or or
+// DESCRIPTION: Constructor
 //              Also registers with the ServoSequencer.
 //
 // INPUT:       Nothing

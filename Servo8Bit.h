@@ -47,6 +47,11 @@
 #include <inttypes.h>
 
 
+//Options
+//pick one, comment the other one out:
+//#define USE_TIMER0
+#define USE_TIMER1
+
 
 class Servo8Bit
 {
