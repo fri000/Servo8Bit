@@ -1,6 +1,6 @@
 /*
  Servo8Bit.cpp - Interrupt driven Servo library for the Attiny45 and Attiny85 that uses an 8 bit timer.
- Version 0.5
+ Version 0.6
  Copyright (c) 2011 Ilya Brutman.  All right reserved.
 
  This library is free software; you can redistribute it and/or
@@ -48,7 +48,7 @@
 
 
 //Options
-//pick one, comment the other one out:
+//pick one, comment out the other one out:
 //#define USE_TIMER0
 #define USE_TIMER1
 
