@@ -1,6 +1,6 @@
 /*
  Servo8Bit.cpp - Interrupt driven Servo library for the Attiny45 and Attiny85 that uses an 8 bit timer.
- Version 0.5
+ Version 0.6
  Copyright (c) 2011 Ilya Brutman.  All right reserved.
 
  This library is free software; you can redistribute it and/or
@@ -41,6 +41,9 @@
    detach()              - Stops an attached servos from pulsing its i/o pin.
  */
 
+
+//TODO: Add an explaination of how this driver works. Include plenty of ASCII diagrams.
+
 #include "Servo8Bit.h"
 #include <inttypes.h>
 #include <avr/io.h>
@@ -51,6 +54,24 @@
 // *The Servo class - which provides the Arduino-like interface
 
 
+
+#ifdef USE_TIMER0
+    #define TCNTn   TCNT0
+    #define OCRnx   OCR0A
+    #define OCFnx   OCF0A
+    #define OCIEnx  OCIE0A
+#endif
+
+#ifdef USE_TIMER1
+    #define TCNTn   TCNT1
+    #define OCRnx   OCR1A
+    #define OCFnx   OCF1A
+    #define OCIEnx  OCIE1A
+#endif
+
+// Trim Duration is about the total combined time spent inside the Compare Match ISR
+// This time is in timer ticks, where each tick is always 8 microseconds.
+#define TRIM_DURATION 4
 
 
 //This is the driver class responsible for generating the servo control pulses
@@ -121,6 +142,7 @@ private:
     static const    uint16_t          kMaxNumberOfServosSupported = 5;  //The number of servos to support. See NOTE1 below.
     static volatile SequencerState_t  state;                            //The current state of the driver
     static          bool              timerIsSetup;                     //True if the timer used by this driver was configured
+    static          bool              servoArrayIsInited;               //True if the servo Registry array was initialized with default values.
     static          ServoEntry        servoRegistry[kMaxNumberOfServosSupported]; //The array of servo slots
     static volatile uint8_t           servoIndex;                       //The index of the current servo slot we are working with.
                                                                         //With 5 servos, we go through the whole servoRegistry every 20 milliseconds exactly.
@@ -129,8 +151,10 @@ private:
     // Servo Sequencer private functions
     //=============================================================================
     //This is a purely static class. Disallow making instances of this class.
-    ServoSequencer();   //private constructor
+    ServoSequencer();              //private constructor
     static void servoTimerSetup(); //Configures the timer used by this driver
+    static void setupTimerPrescaler(); //helper function to setup the prescaler
+    static void initServoArray();  //sets default values to each element of the servoRegistry array
 
 };//end ServoSequencer
 
@@ -141,6 +165,7 @@ private:
 //=============================================================================
 volatile ServoSequencer::SequencerState_t ServoSequencer::state         = ServoSequencer::WAITING_TO_SET_PIN_HIGH;
          bool                             ServoSequencer::timerIsSetup  = false;
+         bool                             ServoSequencer::servoArrayIsInited = false;
 volatile uint8_t                          ServoSequencer::servoIndex    = 0;
          ServoSequencer::ServoEntry       ServoSequencer::servoRegistry[kMaxNumberOfServosSupported];
          //TODO: Add the rest of the class variables here for better organization?
@@ -166,13 +191,14 @@ volatile uint8_t                          ServoSequencer::servoIndex    = 0;
 //=============================================================================
 uint8_t ServoSequencer::registerServo()
 {
-    if( timerIsSetup == false)
+
+    if(servoArrayIsInited == false)
     {
-        servoTimerSetup();
+        initServoArray();
     }
     else
     {
-        //the timer is already setup. Do nothing.
+        //the servo array is already inited. Do nothing.
         //It needs to be setup only once. We do it when the first servo is registered.
     }
 
@@ -346,6 +372,22 @@ void ServoSequencer::enableDisableServo(uint8_t servoNumber, bool servoShouldBeE
     {
         if(servoShouldBeEnabled == true)
         {
+            //if this is the very first servo we are enabling then configure the servo timer
+            if( timerIsSetup == false)
+            {
+                servoTimerSetup();
+                timerIsSetup = true;
+            }
+            else
+            {
+                //The timer is already setup. Do nothing.
+                //It needs to be setup only once. We do it when the first servo is enabled.
+                //We setup the timer as late as possible. This allows this servo library
+                //to be more compatible with various frameworks written for the attiny45/85,
+                //which typically configure all the timers to their liking on start up.
+                //Configuring our timer late allows us to overwrite these settings.
+            }
+
             //enable the servo. Its pulse will now be outputed on its pin.
             servoRegistry[servoNumber].enabled = true;
         }
@@ -355,7 +397,8 @@ void ServoSequencer::enableDisableServo(uint8_t servoNumber, bool servoShouldBeE
             servoRegistry[servoNumber].enabled = false;
             //TODO: set this servo pin low, if it is high.
             //      Actually, ideally the pulse should finish by itself
-            //      forcing the pin low will generate weird a length pulse for the servo
+            //      forcing the pin low will generate a weird length pulse for the servo
+            //      Need to add some sort of "disable pending" status
         }
     }
     else
@@ -393,12 +436,12 @@ bool ServoSequencer::isEnabled(uint8_t servoNumber)
     }
 }//end isEnabled
 
+
 //=============================================================================
 // FUNCTION:    void servoTimerSetup()
 //
 // DESCRIPTION: Sets up the timer used by this servo driver
-//              Initializes the Servo Registry array.
-//              No PWM waves can be generated until this function is called.
+//              No servo pulses can be generated until this function is called.
 //
 // INPUT:       Nothing
 //
@@ -407,37 +450,18 @@ bool ServoSequencer::isEnabled(uint8_t servoNumber)
 //=============================================================================
 void ServoSequencer::servoTimerSetup()
 {
-    if( timerIsSetup == false )
-    {
-        //init the Servo Registry array
-        for(uint8_t i = 0; i < kMaxNumberOfServosSupported; ++i)
-        {
-            servoRegistry[i].pulseLengthInTicks = 128;
-            servoRegistry[i].pin = 0;
-            servoRegistry[i].enabled = false;
-            servoRegistry[i].slotOccupied = false;
-        }
+    //set up the timer prescaler based on which timer was selected and our F_CPU clock
+    setupTimerPrescaler();
 
-        //set counter0 prescaler to 64
-        //our FCLK is 8mhz so this makes each timer tick be 8 microseconds long
-        TCCR0B &= ~(1<< CS02); //clear
-        TCCR0B |=  (1<< CS01); //set
-        TCCR0B |=  (1<< CS00); //set
+    // Enable Output Compare Match Interrupt
+    TIMSK |= (1 << OCIEnx);
 
-        TIMSK |= (1 << OCIE0A); // Enable Output Compare Match A Interrupt
-
-        //reset the counter to 0
-        TCNT0  = 0;
-        //set the compare value to any number larger than 0
-        OCR0A = 255;
-        sei(); // Enable global interrupts
-
-        timerIsSetup = true;
-    }
-    else
-    {
-        //the timer is already set up. do nothing.
-    }
+    //reset the counter to 0
+    TCNTn  = 0;
+    //set the compare value to any number larger than 0
+    OCRnx = 255;
+    // Enable global interrupts
+    sei();
 
     /*
     TCNT0 - The Timer/Counter
@@ -448,6 +472,95 @@ void ServoSequencer::servoTimerSetup()
     */
 
 }//end servoTimerSetup
+
+
+//=============================================================================
+// FUNCTION:    void setupTimerPrescaler()
+//
+// DESCRIPTION: Helper function that sets up the timer prescaller based on what
+//              timer is selected and the F_CPU frequence.
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//
+//=============================================================================
+void ServoSequencer::setupTimerPrescaler()
+{
+    #ifdef USE_TIMER0
+        //reset the Timer Counter Control Register to its reset value
+        TCCR0B = 0;
+
+        #if F_CPU == 8000000L
+            //set counter0 prescaler to 64
+            //our FCLK is 8mhz so this makes each timer tick be 8 microseconds long
+            TCCR0B &= ~(1<< CS02); //clear
+            TCCR0B |=  (1<< CS01); //set
+            TCCR0B |=  (1<< CS00); //set
+
+        #elif F_CPU == 1000000L
+            //set counter0 prescaler to 8
+            //our F_CPU is 1mhz so this makes each timer tick be 8 microseconds long
+            TCCR0B &= ~(1<< CS02); //clear
+            TCCR0B |=  (1<< CS01); //set
+            TCCR0B &= ~(1<< CS00); //clear
+        #else
+            //unsupported clock speed
+            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #endif
+    #endif
+
+
+    #ifdef USE_TIMER1
+        //reset the Timer Counter Control Register to its reset value
+        TCCR1 = 0;
+
+        #if F_CPU == 8000000L
+            //set counter1 prescaler to 64
+            //our F_CPU is 8mhz so this makes each timer tick be 8 microseconds long
+            TCCR1 &= ~(1<< CS13); //clear
+            TCCR1 |=  (1<< CS12); //set
+            TCCR1 |=  (1<< CS11); //set
+            TCCR1 |=  (1<< CS10); //set
+
+        #elif F_CPU == 1000000L
+            //set counter1 prescaler to 8
+            //our F_CPU is 1mhz so this makes each timer tick be 8 microseconds long
+            TCCR1 &= ~(1<< CS13); //clear
+            TCCR1 |=  (1<< CS12); //set
+            TCCR1 &= ~(1<< CS11); //clear
+            TCCR1 &= ~(1<< CS10); //clear
+        #else
+            //unsupported clock speed
+            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #endif
+    #endif
+}//end setupTimerPrescaler
+
+
+//=============================================================================
+// FUNCTION:    void initServoArray()
+//
+// DESCRIPTION: Sets default values to each element of the servoRegistry array
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//
+//=============================================================================
+void ServoSequencer::initServoArray()
+{
+    //init the Servo Registry array
+    for(uint8_t i = 0; i < kMaxNumberOfServosSupported; ++i)
+    {
+        servoRegistry[i].pulseLengthInTicks = 128;
+        servoRegistry[i].pin = 0;
+        servoRegistry[i].enabled = false;
+        servoRegistry[i].slotOccupied = false;
+    }
+
+    servoArrayIsInited = true;
+}//end initServoArray
 
 
 //=============================================================================
@@ -488,9 +601,9 @@ void ServoSequencer::timerCompareMatchISR()
         }
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
         //set the compare value to 64 (512 us). This is the constant pulse offset.
-        OCR0A = 64 - 4; //trim off 4 ticks (32us), this is about the total combined time we spent inside this ISR;
+        OCRnx = 64 - TRIM_DURATION; //trim off 4 ticks (32us), this is about the total combined time we spent inside this ISR;
         //update our state
         state = WAITING_FOR_512_MARK;
         break;
@@ -498,28 +611,29 @@ void ServoSequencer::timerCompareMatchISR()
 
     case WAITING_FOR_512_MARK:
         //set the compare value to the additional amount of timer ticks the pulse should last
-        OCR0A = servoRegistry[servoIndex].pulseLengthInTicks;
+        OCRnx = servoRegistry[servoIndex].pulseLengthInTicks;
         //update our state
         state = WAITING_TO_SET_PIN_LOW;
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
 
-        //Did we just set OCR0A to zero?
-        if(OCR0A == 0)
+        //Did we just set OCRnx to zero?
+        if(OCRnx == 0)
         {
-           //Since we are setting OCR0A and TCNT0 to 0 we are not going to get an interrupt
+           //Since we are setting OCRnx and TCNTn to 0 we are not going to get an interrupt
            //until the counter overflows and goes back to 0.
-           //Manually set the Timer0 Output Compare Match A interrupt
-           TIFR &= ~(1 << OCF0A);  // write 0 to the OCF0A flag to set it
-           //This is cause this interrupt to fire again
+           //set the counter its highest value, to have it overflow right away.
+           TCNTn = 0xFF;
+           //This will cause this interrupt to fire again almost immediately (at the next timer tick)
         }
         else
         {
             //otherwise we need to clear the OCF0A flag because it is possible that the
             //counter value incremented and matched the output compare value while this
             //function was being executed
-            TIFR |= (1 << OCF0A);  // write logical 1 to the OCF0A flag to clear it
+            TIFR = (1 << OCF0A);  // write logical 1 to the OCF0A flag to clear it
+                                  // also have to write 0 to all other bits for this to work.
         }
         break;
 
@@ -544,20 +658,20 @@ void ServoSequencer::timerCompareMatchISR()
             //set the compare value to the amount of time (in timer ticks) we need to wait to reach
             //4096 microseconds mark
             //which is 512 minus the total pulse length. (resulting number will be between 0 and 255 inclusive)
-            OCR0A = 512 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
+            OCRnx = 512 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
         }
         else
         {
             //This pulse length has not reached the 2048 us mark, therefor we have to get to that mark first
             //update state
             state = WAITING_FOR_2048_MARK;
-            //set OCR0A to the amount of time (in timer ticks) we have to wait to reach this mark
+            //set OCRnx to the amount of time (in timer ticks) we have to wait to reach this mark
             //which is 255 minus the total pulse length
-            OCR0A = 255 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
+            OCRnx = 255 - (64 + servoRegistry[servoIndex].pulseLengthInTicks);
         }
 
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
 
         break;
 
@@ -565,17 +679,24 @@ void ServoSequencer::timerCompareMatchISR()
         //update state
         state = WAITING_TO_SET_PIN_HIGH;
         //reset the counter to 0
-        TCNT0  = 0;
+        TCNTn  = 0;
         //set the compare value to the longest length of time, 255 ticks, or 2040 microseconds
         //This will take us to the ~4096 microsecond mark,
         //at which point the cycle starts again with the next servo slot.
-        OCR0A = 255;
+        OCRnx = 255;
         break;
     }//end switch
 }//end timerCompareMatchISR
 
 
 
+
+//=============================================================================
+// Non Memeber Functions
+//=============================================================================
+
+//only define this ISR if we are using TIMER0
+#ifdef USE_TIMER0
 //=============================================================================
 // FUNCTION:    Interrupt service routine for timer0 compare A match
 //
@@ -590,11 +711,27 @@ ISR(TIM0_COMPA_vect)
 {
     ServoSequencer::timerCompareMatchISR();
 }//end ISR TIM0_COMPA_vect
+#endif
 
 
 
-
-
+//only define this ISR if we are using TIMER1
+#ifdef USE_TIMER1
+//=============================================================================
+// FUNCTION:    Interrupt service routine for timer1 compare A match
+//
+// DESCRIPTION: AVR Libc provided function that is vectored into when the
+//              timer0 compare A match interrupt fires.
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//=============================================================================
+ISR(TIM1_COMPA_vect)
+{
+    ServoSequencer::timerCompareMatchISR();
+}//end ISR TIM0_COMPA_vect
+#endif
 
 
 
@@ -629,9 +766,13 @@ ISR(TIM0_COMPA_vect)
 
 
 //=============================================================================
+// Servo Class Functions
+//=============================================================================
+
+//=============================================================================
 // FUNCTION:    constructor
 //
-// DESCRIPTION: Constructor or or or or or
+// DESCRIPTION: Constructor
 //              Also registers with the ServoSequencer.
 //
 // INPUT:       Nothing
