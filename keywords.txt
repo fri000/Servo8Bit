@@ -1,0 +1,30 @@
+#######################################
+# Syntax Coloring Map For TinyWireS
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+Servo8Bit	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+attach	KEYWORD2
+write	KEYWORD2
+read	KEYWORD2
+readMicroseconds	KEYWORD2
+attached		KEYWORD2
+detach			KEYWORD3
+
+#######################################
+# Instances (KEYWORD2)
+#######################################
+
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
