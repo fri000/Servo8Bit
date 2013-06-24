@@ -1,6 +1,6 @@
 /*
  Servo8Bit.cpp - Interrupt driven Servo library for the Attiny45 and Attiny85 that uses an 8 bit timer.
- Version 0.6
+ Version 0.7
  Copyright (c) 2011 Ilya Brutman.  All right reserved.
 
  This library is free software; you can redistribute it and/or
@@ -57,7 +57,7 @@ class Servo8Bit
 {
 public:
   Servo8Bit();
-  //TODO: create destructor
+  ~Servo8Bit();
   uint8_t attach(uint8_t pin);              // attach the given pin to the next free channel, returns channel number or 0 if failure
   uint8_t attach(uint8_t pin, uint16_t newMin, uint16_t newMax); // as above but also sets min and max values for writes.
   void detach();

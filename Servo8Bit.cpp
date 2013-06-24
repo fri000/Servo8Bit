@@ -1,6 +1,6 @@
 /*
  Servo8Bit.cpp - Interrupt driven Servo library for the Attiny45 and Attiny85 that uses an 8 bit timer.
- Version 0.6
+ Version 0.7
  Copyright (c) 2011 Ilya Brutman.  All right reserved.
 
  This library is free software; you can redistribute it and/or
@@ -239,6 +239,7 @@ void ServoSequencer::deregisterServo(uint8_t servoSlotNumber)
     {
         servoRegistry[servoSlotNumber].enabled      = false;
         servoRegistry[servoSlotNumber].slotOccupied = false;
+		servoRegistry[servoSlotNumber].pulseLengthInTicks = 128; //restore the pulse length to the default setting.
     }
     else
     {
@@ -773,7 +774,6 @@ ISR(TIM1_COMPA_vect)
 // FUNCTION:    constructor
 //
 // DESCRIPTION: Constructor
-//              Also registers with the ServoSequencer.
 //
 // INPUT:       Nothing
 //
@@ -786,9 +786,22 @@ Servo8Bit::Servo8Bit()
  myMin(kDefaultMinimalPulse),
  myMax(kDefaultMaximumPulse)
 {
-    myServoNumber = ServoSequencer::registerServo();
 }//end constructor
 
+//=============================================================================
+// FUNCTION:    destructor
+//
+// DESCRIPTION: destructor
+//
+// INPUT:       Nothing
+//
+// RETURNS:     Nothing
+//
+//=============================================================================
+Servo8Bit::~Servo8Bit()
+{
+	detach();
+}//end destructor
 
 //=============================================================================
 // FUNCTION:    void attach(uint8_t pin)
@@ -801,9 +814,19 @@ Servo8Bit::Servo8Bit()
 //
 //=============================================================================
 uint8_t Servo8Bit::attach(uint8_t pin)
-{
-    //make sure we have a valid servo number. If it's invalid then exit doing nothing.
-    if(myServoNumber == invalidServoNumber) return 0;
+{	
+	//Do we need to register with the servo sequencer?
+    if(myServoNumber == invalidServoNumber)
+	{
+		//Yep, we do, so register and save our servo number.
+		myServoNumber = ServoSequencer::registerServo();
+		if(myServoNumber == invalidServoNumber)
+		{
+			//We got an invalid servo number. That means the servo sequencer is full and can't handle any more servos.
+			return 0;
+		}
+	}
+
 
     //LIMITATION: this servo class only works with PORTB, which is the only port
     //on the attiny45 and attiny85
