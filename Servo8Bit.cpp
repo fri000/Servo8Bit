@@ -507,7 +507,7 @@ void ServoSequencer::setupTimerPrescaler()
             TCCR0B &= ~(1<< CS00); //clear
         #else
             //unsupported clock speed
-            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #error Unsupported clock speed. This code will only operate at 8Mhz or 1Mhz
         #endif
     #endif
 
@@ -533,7 +533,7 @@ void ServoSequencer::setupTimerPrescaler()
             TCCR1 &= ~(1<< CS10); //clear
         #else
             //unsupported clock speed
-            //TODO: find a way to have the compiler stop compiling and bark at the user
+        #error Unsupported clock speed. This code will only operate at 8Mhz or 1Mhz
         #endif
     #endif
 }//end setupTimerPrescaler
