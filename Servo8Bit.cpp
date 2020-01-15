@@ -782,7 +782,7 @@ ISR(TIM1_COMPA_vect)
 //=============================================================================
 Servo8Bit::Servo8Bit()
 :invalidServoNumber(ServoSequencer::kInvalidServoIndex),
- myServoNumber(invalidServoNumber),
+ myServoNumber(ServoSequencer::kInvalidServoIndex),
  myMin(kDefaultMinimalPulse),
  myMax(kDefaultMaximumPulse)
 {
